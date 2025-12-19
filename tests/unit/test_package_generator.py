@@ -409,3 +409,184 @@ try:
 except ImportError:
     # Bundle generator not available
     pass
+
+
+# Test core package generator
+try:
+    from generate_core_package import (
+        CORE_MODULES,
+        CORE_SUBDIRECTORIES,
+        CORE_DATA_FILES,
+        calculate_directory_size,
+        generate_core_init_py,
+        generate_core_handlers_init,
+        generate_pyproject_toml as generate_core_pyproject_toml,
+        generate_readme as generate_core_readme,
+        generate_core_package,
+        generate_full_meta_package,
+        generate_motocore_meta_package,
+        generate_meta_package_pyproject,
+    )
+
+    class TestCoreModuleList:
+        """Tests for core module definitions."""
+
+        def test_core_modules_defined(self):
+            assert len(CORE_MODULES) > 20
+            assert '__init__.py' in CORE_MODULES
+            assert 'session.py' in CORE_MODULES
+            assert 'client.py' in CORE_MODULES
+            assert 'credentials.py' in CORE_MODULES
+
+        def test_core_subdirectories_defined(self):
+            assert 'crt' in CORE_SUBDIRECTORIES
+            assert 'docs' in CORE_SUBDIRECTORIES
+            assert 'retries' in CORE_SUBDIRECTORIES
+            assert 'vendored' in CORE_SUBDIRECTORIES
+
+        def test_core_data_files_defined(self):
+            assert '_retry.json' in CORE_DATA_FILES
+            assert 'endpoints.json' in CORE_DATA_FILES
+            assert 'partitions.json' in CORE_DATA_FILES
+
+    class TestCorePackageGeneration:
+        """Tests for core package generation."""
+
+        def test_generate_core_init_py(self):
+            content = generate_core_init_py('1.0.0')
+
+            assert "__version__ = '1.0.0'" in content
+            assert 'from botocore.session import Session' in content
+            assert 'from botocore.exceptions import BotoCoreError, ClientError' in content
+            assert 'def xform_name' in content
+            assert 'UNSIGNED' in content
+
+        def test_generate_core_handlers_init(self):
+            content = generate_core_handlers_init()
+
+            assert 'REGISTER_FIRST' in content
+            assert 'REGISTER_LAST' in content
+            assert 'BUILTIN_HANDLERS' in content
+            assert 'from botocore.handlers._core import' in content
+            assert 'from botocore.handlers._registry import' in content
+
+        def test_generate_core_pyproject_toml(self):
+            content = generate_core_pyproject_toml('1.0.0')
+
+            assert 'name = "motocore-core"' in content
+            assert 'version = "1.0.0"' in content
+            assert 'jmespath' in content
+            assert 'python-dateutil' in content
+            assert 'urllib3' in content
+            assert '[project.optional-dependencies]' in content
+            assert 'crt = ["awscrt' in content
+
+        def test_generate_core_readme(self):
+            content = generate_core_readme()
+
+            assert '# motocore-core' in content
+            assert 'pip install motocore-core' in content
+            assert 'AWS SDK' in content
+
+        def test_generate_core_package(self):
+            root = get_botocore_root()
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_dir = Path(tmpdir)
+                package_dir = generate_core_package(output_dir, root)
+
+                # Check package was created
+                assert package_dir.exists()
+                assert package_dir.name == 'motocore-core'
+
+                # Check expected files
+                assert (package_dir / 'pyproject.toml').exists()
+                assert (package_dir / 'README.md').exists()
+
+                botocore_dir = package_dir / 'botocore'
+                assert botocore_dir.exists()
+                assert (botocore_dir / '__init__.py').exists()
+                assert (botocore_dir / 'session.py').exists()
+                assert (botocore_dir / 'client.py').exists()
+
+                # Check handlers
+                handlers_dir = botocore_dir / 'handlers'
+                assert handlers_dir.exists()
+                assert (handlers_dir / '__init__.py').exists()
+                assert (handlers_dir / '_core.py').exists()
+                assert (handlers_dir / '_registry.py').exists()
+
+                # Check core data
+                data_dir = botocore_dir / 'data'
+                assert data_dir.exists()
+                assert (data_dir / 'endpoints.json').exists()
+                assert (data_dir / 'partitions.json').exists()
+
+                # Check subdirectories
+                assert (botocore_dir / 'crt').exists()
+                assert (botocore_dir / 'retries').exists()
+                assert (botocore_dir / 'vendored').exists()
+
+        def test_core_package_size_reasonable(self):
+            root = get_botocore_root()
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_dir = Path(tmpdir)
+                package_dir = generate_core_package(output_dir, root)
+
+                size = calculate_directory_size(package_dir)
+                # Core package should be under 5 MB
+                assert size < 5 * 1024 * 1024
+                # Core package should be at least 1 MB
+                assert size > 1 * 1024 * 1024
+
+    class TestMetaPackageGeneration:
+        """Tests for meta-package generation."""
+
+        def test_generate_meta_package_pyproject(self):
+            content = generate_meta_package_pyproject(
+                'motocore-test',
+                'Test package',
+                ['motocore-core>=1.0.0', 'motocore-dynamodb>=1.0.0'],
+                '1.0.0',
+            )
+
+            assert 'name = "motocore-test"' in content
+            assert '"motocore-core>=1.0.0"' in content
+            assert '"motocore-dynamodb>=1.0.0"' in content
+
+        def test_generate_full_meta_package(self):
+            root = get_botocore_root()
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_dir = Path(tmpdir)
+                package_dir = generate_full_meta_package(output_dir, root)
+
+                assert package_dir.exists()
+                assert package_dir.name == 'motocore-full'
+                assert (package_dir / 'pyproject.toml').exists()
+                assert (package_dir / 'README.md').exists()
+
+                # Check pyproject has many dependencies
+                pyproject = (package_dir / 'pyproject.toml').read_text()
+                assert 'motocore-core' in pyproject
+                assert 'motocore-dynamodb' in pyproject
+                assert 'motocore-s3' in pyproject
+
+        def test_generate_motocore_meta_package(self):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_dir = Path(tmpdir)
+                package_dir = generate_motocore_meta_package(output_dir)
+
+                assert package_dir.exists()
+                assert package_dir.name == 'motocore'
+                assert (package_dir / 'pyproject.toml').exists()
+                assert (package_dir / 'README.md').exists()
+
+                # Check it depends on motocore-full
+                pyproject = (package_dir / 'pyproject.toml').read_text()
+                assert 'motocore-full' in pyproject
+
+except ImportError:
+    # Core package generator not available
+    pass
