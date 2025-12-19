@@ -1,0 +1,86 @@
+{
+    "bundles": {
+        "compute": {
+            "description": "Compute services for running applications",
+            "services": ["ec2", "lambda", "ecs", "eks", "batch", "lightsail", "elasticbeanstalk"]
+        },
+        "database": {
+            "description": "Database and data storage services",
+            "services": ["dynamodb", "rds", "redshift", "elasticache", "neptune", "docdb", "dax", "keyspaces", "timestream-query", "timestream-write"]
+        },
+        "storage": {
+            "description": "Object and file storage services",
+            "services": ["s3", "s3control", "glacier", "efs", "fsx", "storagegateway"]
+        },
+        "serverless": {
+            "description": "Core serverless application services",
+            "services": ["lambda", "dynamodb", "apigateway", "apigatewayv2", "sqs", "sns", "stepfunctions", "eventbridge", "events"]
+        },
+        "ml": {
+            "description": "Machine learning and AI services",
+            "services": ["sagemaker", "bedrock", "bedrock-runtime", "rekognition", "comprehend", "translate", "polly", "transcribe", "textract"]
+        },
+        "security": {
+            "description": "Security, identity, and compliance services",
+            "services": ["iam", "kms", "secretsmanager", "sts", "cognito-idp", "cognito-identity", "acm", "waf", "wafv2", "guardduty"]
+        },
+        "networking": {
+            "description": "Networking and content delivery services",
+            "services": ["ec2", "vpc", "route53", "cloudfront", "elb", "elbv2", "apigateway", "apigatewayv2"]
+        },
+        "monitoring": {
+            "description": "Monitoring and observability services",
+            "services": ["cloudwatch", "logs", "xray", "cloudtrail", "config"]
+        },
+        "messaging": {
+            "description": "Messaging and integration services",
+            "services": ["sqs", "sns", "eventbridge", "events", "mq", "kinesis"]
+        },
+        "containers": {
+            "description": "Container orchestration services",
+            "services": ["ecs", "eks", "ecr", "ecr-public"]
+        },
+        "minimal-lambda": {
+            "description": "Minimal set for basic Lambda functions",
+            "services": ["sts", "logs"]
+        },
+        "lambda-dynamodb": {
+            "description": "Lambda with DynamoDB access",
+            "services": ["dynamodb", "sts", "logs"]
+        },
+        "lambda-s3": {
+            "description": "Lambda with S3 access",
+            "services": ["s3", "sts", "logs"]
+        },
+        "lambda-full": {
+            "description": "Lambda with common integrations",
+            "services": ["dynamodb", "s3", "sqs", "sns", "secretsmanager", "ssm", "sts", "logs"]
+        }
+    },
+    "shared_handlers": {
+        "comment": "Services that share handler modules - they should be packaged together",
+        "groups": {
+            "s3": ["s3", "s3control"],
+            "rds": ["rds", "neptune", "docdb"],
+            "sts": ["sts", "cognito-identity"],
+            "bedrock": ["bedrock", "bedrock-runtime", "bedrock-agentcore"]
+        }
+    },
+    "size_tiers": {
+        "comment": "Service size classifications for optimization decisions",
+        "large": {
+            "description": "Services over 1 MB that benefit most from modularization",
+            "threshold_mb": 1.0,
+            "examples": ["ec2", "cloudfront", "sagemaker", "s3", "quicksight", "rds"]
+        },
+        "medium": {
+            "description": "Services between 100 KB and 1 MB",
+            "threshold_kb": 100,
+            "examples": ["lambda", "dynamodb", "iam", "ecs"]
+        },
+        "small": {
+            "description": "Services under 100 KB",
+            "examples": ["sts", "logs", "ssm"]
+        }
+    }
+}
