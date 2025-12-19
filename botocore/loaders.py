@@ -100,6 +100,23 @@ applied to the model after it is loaded. Data in these files might represent
 information that doesn't quite fit in the original models, but is still needed
 for the sdk. For instance, additional operation parameters might be added here
 which don't represent the actual service api.
+
+Modular Loading
+===============
+
+In addition to filesystem-based loading, botocore supports modular service
+data loading through data providers. This enables:
+
+    * Installing only the AWS services you need (reduced package size)
+    * Loading service definitions from separately installed packages
+    * Custom service data sources
+
+Service packages can register themselves via Python entry points::
+
+    [project.entry-points."botocore.services"]
+    dynamodb = "motocore_dynamodb:get_data_provider"
+
+See :py:mod:`botocore.dataprovider` for more details on creating data providers.
 """
 
 import logging
@@ -230,6 +247,16 @@ class Loader:
     The main method used here is ``load_service_model``, which is a
     convenience method over ``load_data`` and ``determine_latest_version``.
 
+    The Loader supports two modes of operation:
+
+    1. **Legacy mode** (default): Uses filesystem search paths to locate
+       service data. This is the traditional botocore behavior.
+
+    2. **Data provider mode**: Uses pluggable data providers that can
+       load service data from multiple sources including installed packages.
+       Enable this by passing ``use_data_providers=True`` or by providing
+       a custom ``data_provider``.
+
     """
 
     FILE_LOADER_CLASS = JSONFileLoader
@@ -248,13 +275,47 @@ class Loader:
         cache=None,
         include_default_search_paths=True,
         include_default_extras=True,
+        data_provider=None,
+        use_data_providers=False,
     ):
+        """Initialize the Loader.
+
+        :type extra_search_paths: list
+        :param extra_search_paths: Additional filesystem paths to search
+            for service data.
+
+        :type file_loader: JSONFileLoader
+        :param file_loader: Custom file loader instance.
+
+        :type cache: dict
+        :param cache: Optional cache dictionary (unused, for compatibility).
+
+        :type include_default_search_paths: bool
+        :param include_default_search_paths: Whether to include the default
+            ~/.aws/models and botocore/data paths.
+
+        :type include_default_extras: bool
+        :param include_default_extras: Whether to include SDK extras.
+
+        :type data_provider: ServiceDataProvider
+        :param data_provider: A custom data provider to use instead of
+            filesystem-based loading. If provided, takes precedence over
+            search paths.
+
+        :type use_data_providers: bool
+        :param use_data_providers: If True and no data_provider is given,
+            creates a default composite data provider that includes
+            entry point discovery. This enables loading service data from
+            separately installed packages.
+        """
         self._cache = {}
         if file_loader is None:
             file_loader = self.FILE_LOADER_CLASS()
         self.file_loader = file_loader
+
+        # Build search paths for legacy mode
         if extra_search_paths is not None:
-            self._search_paths = extra_search_paths
+            self._search_paths = list(extra_search_paths)
         else:
             self._search_paths = []
         if include_default_search_paths:
@@ -267,6 +328,58 @@ class Loader:
             self._extras_types.extend(self.BUILTIN_EXTRAS_TYPES)
 
         self._extras_processor = ExtrasProcessor()
+
+        # Set up data provider if requested
+        self._data_provider = data_provider
+        self._use_data_providers = use_data_providers or (data_provider is not None)
+
+        if self._use_data_providers and self._data_provider is None:
+            # Create default data provider with entry point discovery
+            self._data_provider = self._create_default_data_provider(
+                extra_search_paths,
+                include_default_search_paths,
+            )
+
+    def _create_default_data_provider(
+        self, extra_search_paths, include_default_search_paths
+    ):
+        """Create the default composite data provider."""
+        # Import here to avoid circular imports
+        from botocore.dataprovider import (
+            CompositeDataProvider,
+            FileSystemDataProvider,
+            discover_entry_point_providers,
+        )
+
+        providers = []
+
+        # Add extra search paths first (highest priority)
+        if extra_search_paths:
+            for path in extra_search_paths:
+                path = os.path.expanduser(os.path.expandvars(path))
+                if os.path.isdir(path):
+                    providers.append(FileSystemDataProvider(path))
+
+        # Add entry point providers (installed service packages)
+        providers.extend(discover_entry_point_providers())
+
+        # Add default paths
+        if include_default_search_paths:
+            # User models
+            if os.path.isdir(self.CUSTOMER_DATA_PATH):
+                providers.append(FileSystemDataProvider(self.CUSTOMER_DATA_PATH))
+            # Builtin models
+            providers.append(FileSystemDataProvider(self.BUILTIN_DATA_PATH))
+
+        return CompositeDataProvider(providers)
+
+    @property
+    def data_provider(self):
+        """The data provider used for loading service data.
+
+        Returns None if using legacy filesystem-based loading.
+        """
+        return self._data_provider
 
     @property
     def search_paths(self):
@@ -295,6 +408,11 @@ class Loader:
             be sorted.
 
         """
+        # Use data provider if available
+        if self._data_provider is not None:
+            return self._data_provider.list_available_services(type_name)
+
+        # Legacy filesystem-based discovery
         services = set()
         for possible_path in self._potential_locations():
             # Any directory in the search path is potentially a service.
@@ -357,6 +475,16 @@ class Loader:
         :return: A list of API version strings in sorted order.
 
         """
+        # Use data provider if available
+        if self._data_provider is not None:
+            versions = self._data_provider.list_api_versions(
+                service_name, type_name
+            )
+            if not versions:
+                raise DataNotFoundError(data_path=service_name)
+            return versions
+
+        # Legacy filesystem-based discovery
         known_api_versions = set()
         for possible_path in self._potential_locations(
             service_name, must_exist=True, is_dir=True
@@ -402,20 +530,28 @@ class Loader:
 
         :return: The loaded data, as a python type (e.g. dict, list, etc).
         """
-        # Wrapper around the load_data.  This will calculate the path
-        # to call load_data with.
+        # Check if service is known
         known_services = self.list_available_services(type_name)
         if service_name not in known_services:
             raise UnknownServiceError(
                 service_name=service_name,
                 known_service_names=', '.join(sorted(known_services)),
             )
+
+        # Determine API version if not specified
         if api_version is None:
             api_version = self.determine_latest_version(
                 service_name, type_name
             )
-        full_path = os.path.join(service_name, api_version, type_name)
-        model = self.load_data(full_path)
+
+        # Load the model using data provider or legacy path
+        if self._data_provider is not None:
+            model = self._data_provider.load_service_data(
+                service_name, type_name, api_version
+            )
+        else:
+            full_path = os.path.join(service_name, api_version, type_name)
+            model = self.load_data(full_path)
 
         # Load in all the extras
         extras_data = self._find_extras(service_name, type_name, api_version)
@@ -445,6 +581,11 @@ class Loader:
             where the data was loaded from. If no data could be found then a
             DataNotFoundError is raised.
         """
+        # Use data provider if available
+        if self._data_provider is not None:
+            return self._data_provider.load_data_with_path(name)
+
+        # Legacy filesystem-based loading
         for possible_path in self._potential_locations(name):
             found = self.file_loader.load_file(possible_path)
             if found is not None:
@@ -469,6 +610,11 @@ class Loader:
         :return: The loaded data. If no data could be found then
             a DataNotFoundError is raised.
         """
+        # Use data provider if available
+        if self._data_provider is not None:
+            return self._data_provider.load_data(name)
+
+        # Legacy: use load_data_with_path
         data, _ = self.load_data_with_path(name)
         return data
 
@@ -500,6 +646,11 @@ class Loader:
 
         :return: Whether the given path is within the package's data directory.
         """
+        # Use data provider if available
+        if self._data_provider is not None:
+            return self._data_provider.is_builtin_path(path)
+
+        # Legacy check
         path = os.path.expanduser(os.path.expandvars(path))
         return path.startswith(self.BUILTIN_DATA_PATH)
 
