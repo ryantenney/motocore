@@ -173,6 +173,8 @@ class Session:
         self._register_default_config_resolver()
         self._register_smart_defaults_factory()
         self._register_user_agent_creator()
+        self._register_service_model_cache()
+        self._register_lazy_handler_loader()
 
     def _register_event_emitter(self):
         self._components.register_component('event_emitter', self._events)
@@ -274,6 +276,30 @@ class Session:
     def _register_user_agent_creator(self):
         uas = UserAgentString.from_environment()
         self._components.register_component('user_agent_creator', uas)
+
+    def _register_service_model_cache(self):
+        """Register the service model cache for lazy model loading."""
+        def create_service_model_cache():
+            from botocore.modelcache import ServiceModelCache
+
+            loader = self.get_component('data_loader')
+            return ServiceModelCache(loader)
+
+        self._internal_components.lazy_register_component(
+            'service_model_cache', create_service_model_cache
+        )
+
+    def _register_lazy_handler_loader(self):
+        """Register the lazy handler loader for on-demand handler loading."""
+        def create_lazy_handler_loader():
+            from botocore.modelcache import LazyServiceHandlerLoader
+
+            event_emitter = self.get_component('event_emitter')
+            return LazyServiceHandlerLoader(event_emitter)
+
+        self._internal_components.lazy_register_component(
+            'lazy_handler_loader', create_lazy_handler_loader
+        )
 
     def _create_csm_monitor(self):
         if self.get_config_variable('csm_enabled'):
