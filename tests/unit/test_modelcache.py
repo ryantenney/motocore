@@ -234,6 +234,254 @@ class TestServiceModelCache:
         assert ('service2', None) in cache._service_models
 
 
+class TestLazyEndpointDataProviderModular:
+    """Tests for modular endpoint loading functionality."""
+
+    def test_check_modular_endpoints_available_true(self):
+        """Test detection of modular endpoint files."""
+        from botocore.modelcache import LazyEndpointDataProvider
+
+        loader = mock.Mock()
+        loader.load_data.return_value = {'version': '3', 'partitions': []}
+
+        provider = LazyEndpointDataProvider(loader)
+        assert provider._check_modular_endpoints_available() is True
+        loader.load_data.assert_called_once_with('_endpoints_partitions')
+
+    def test_check_modular_endpoints_available_false(self):
+        """Test fallback when modular files not available."""
+        from botocore.modelcache import LazyEndpointDataProvider
+
+        loader = mock.Mock()
+        loader.load_data.side_effect = Exception("Not found")
+
+        provider = LazyEndpointDataProvider(loader)
+        assert provider._check_modular_endpoints_available() is False
+
+    def test_load_partition_structure(self):
+        """Test loading partition structure."""
+        from botocore.modelcache import LazyEndpointDataProvider
+
+        partition_structure = {
+            'version': '3',
+            'partitions': [
+                {
+                    'partition': 'aws',
+                    'regions': {'us-east-1': {}},
+                    'services': {}
+                }
+            ]
+        }
+        loader = mock.Mock()
+        loader.load_data.return_value = partition_structure
+
+        provider = LazyEndpointDataProvider(loader)
+        result = provider._load_partition_structure()
+
+        assert result == partition_structure
+        loader.load_data.assert_called_with('_endpoints_partitions')
+
+    def test_extract_partition_structure(self):
+        """Test extracting partition structure from full endpoints."""
+        from botocore.modelcache import LazyEndpointDataProvider
+
+        full_endpoints = {
+            'version': '3',
+            'partitions': [
+                {
+                    'partition': 'aws',
+                    'dnsSuffix': 'amazonaws.com',
+                    'partitionName': 'AWS',
+                    'regionRegex': '^.*$',
+                    'defaults': {'hostname': 'test'},
+                    'regions': {'us-east-1': {'description': 'N. Virginia'}},
+                    'services': {
+                        'dynamodb': {'endpoints': {'us-east-1': {}}},
+                        's3': {'endpoints': {'us-east-1': {}}}
+                    }
+                }
+            ]
+        }
+
+        loader = mock.Mock()
+        provider = LazyEndpointDataProvider(loader)
+
+        result = provider._extract_partition_structure(full_endpoints)
+
+        # Should have partition data but no services
+        assert len(result['partitions']) == 1
+        assert result['partitions'][0]['partition'] == 'aws'
+        assert result['partitions'][0]['services'] == {}
+        assert 'us-east-1' in result['partitions'][0]['regions']
+
+    def test_extract_service_endpoints(self):
+        """Test extracting service-specific endpoints from full data."""
+        from botocore.modelcache import LazyEndpointDataProvider
+
+        full_endpoints = {
+            'version': '3',
+            'partitions': [
+                {
+                    'partition': 'aws',
+                    'dnsSuffix': 'amazonaws.com',
+                    'partitionName': 'AWS',
+                    'regionRegex': '^.*$',
+                    'defaults': {},
+                    'regions': {'us-east-1': {}},
+                    'services': {
+                        'dynamodb': {'endpoints': {'us-east-1': {}}},
+                        's3': {'endpoints': {'us-east-1': {}}},
+                    }
+                },
+                {
+                    'partition': 'aws-cn',
+                    'dnsSuffix': 'amazonaws.com.cn',
+                    'partitionName': 'AWS China',
+                    'regionRegex': '^cn-.*$',
+                    'defaults': {},
+                    'regions': {'cn-north-1': {}},
+                    'services': {
+                        'dynamodb': {'endpoints': {'cn-north-1': {}}},
+                    }
+                }
+            ]
+        }
+
+        loader = mock.Mock()
+        provider = LazyEndpointDataProvider(loader)
+
+        result = provider._extract_service_endpoints(full_endpoints, 'dynamodb')
+
+        # Should have dynamodb in both partitions
+        assert len(result['partitions']) == 2
+        assert 'dynamodb' in result['partitions'][0]['services']
+        assert 's3' not in result['partitions'][0]['services']
+        assert 'dynamodb' in result['partitions'][1]['services']
+
+    def test_extract_service_endpoints_missing_service(self):
+        """Test extracting endpoints for non-existent service."""
+        from botocore.modelcache import LazyEndpointDataProvider
+
+        full_endpoints = {
+            'version': '3',
+            'partitions': [
+                {
+                    'partition': 'aws',
+                    'services': {'dynamodb': {'endpoints': {}}}
+                }
+            ]
+        }
+
+        loader = mock.Mock()
+        provider = LazyEndpointDataProvider(loader)
+
+        result = provider._extract_service_endpoints(full_endpoints, 'nonexistent')
+        assert result is None
+
+    def test_load_service_endpoints_modular(self):
+        """Test loading per-service endpoint file."""
+        from botocore.modelcache import LazyEndpointDataProvider
+
+        service_endpoints = {
+            'version': '3',
+            'partitions': [
+                {
+                    'partition': 'aws',
+                    'services': {'dynamodb': {'endpoints': {'us-east-1': {}}}}
+                }
+            ]
+        }
+
+        loader = mock.Mock()
+        loader.load_data.return_value = {'version': '3', 'partitions': []}
+        loader.load_service_model.return_value = service_endpoints
+
+        provider = LazyEndpointDataProvider(loader)
+        result = provider._load_service_endpoints('dynamodb')
+
+        assert result == service_endpoints
+        loader.load_service_model.assert_called_with(
+            'dynamodb', 'endpoints', None
+        )
+
+    def test_load_service_endpoints_fallback(self):
+        """Test fallback to full endpoints when per-service file not found."""
+        from botocore.modelcache import LazyEndpointDataProvider
+
+        full_endpoints = {
+            'version': '3',
+            'partitions': [
+                {
+                    'partition': 'aws',
+                    'dnsSuffix': 'amazonaws.com',
+                    'partitionName': 'AWS',
+                    'regionRegex': '',
+                    'defaults': {},
+                    'regions': {},
+                    'services': {'dynamodb': {'endpoints': {'us-east-1': {}}}}
+                }
+            ]
+        }
+
+        loader = mock.Mock()
+        # Modular endpoints not available
+        loader.load_data.side_effect = [
+            Exception("Not found"),  # _endpoints_partitions
+            full_endpoints,  # full endpoints
+        ]
+
+        provider = LazyEndpointDataProvider(loader)
+        result = provider._load_service_endpoints('dynamodb')
+
+        assert result is not None
+        assert 'dynamodb' in result['partitions'][0]['services']
+
+    def test_get_endpoints_for_service(self):
+        """Test the public get_endpoints_for_service method."""
+        from botocore.modelcache import LazyEndpointDataProvider
+
+        service_endpoints = {
+            'version': '3',
+            'partitions': [
+                {
+                    'partition': 'aws',
+                    'services': {'dynamodb': {'endpoints': {'us-east-1': {}}}}
+                }
+            ]
+        }
+
+        loader = mock.Mock()
+        loader.load_data.return_value = {'version': '3', 'partitions': []}
+        loader.load_service_model.return_value = service_endpoints
+
+        provider = LazyEndpointDataProvider(loader)
+        result = provider.get_endpoints_for_service('dynamodb')
+
+        assert result == service_endpoints
+
+    def test_service_endpoints_caching(self):
+        """Test that service endpoints are cached."""
+        from botocore.modelcache import LazyEndpointDataProvider
+
+        service_endpoints = {
+            'version': '3',
+            'partitions': []
+        }
+
+        loader = mock.Mock()
+        loader.load_data.return_value = {'version': '3', 'partitions': []}
+        loader.load_service_model.return_value = service_endpoints
+
+        provider = LazyEndpointDataProvider(loader)
+
+        # Call twice
+        provider.get_endpoints_for_service('dynamodb')
+        provider.get_endpoints_for_service('dynamodb')
+
+        # Should only load once
+        assert loader.load_service_model.call_count == 1
+
+
 class TestLazyEndpointDataProvider:
     """Tests for the LazyEndpointDataProvider class."""
 

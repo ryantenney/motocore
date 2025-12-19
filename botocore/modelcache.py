@@ -174,6 +174,13 @@ class LazyEndpointDataProvider:
 
     This class defers loading of endpoint data until it's actually needed
     for a specific service, reducing memory usage and startup time.
+
+    The provider supports two modes:
+    1. Modular mode: Loads partition structure and per-service endpoint data
+       from separate files (_endpoints_partitions.json and per-service
+       endpoints.json files).
+    2. Legacy mode: Falls back to loading the full endpoints.json file
+       if modular files are not available.
     """
 
     def __init__(self, loader):
@@ -184,8 +191,151 @@ class LazyEndpointDataProvider:
         """
         self._loader = loader
         self._partition_data = None
+        self._partition_structure = None
+        self._service_endpoints = {}
         self._service_endpoint_rulesets = {}
         self._full_endpoints_data = None
+        self._use_modular_endpoints = None
+
+    def _check_modular_endpoints_available(self):
+        """Check if modular endpoint files are available."""
+        if self._use_modular_endpoints is None:
+            try:
+                # Try to load partition structure file
+                self._loader.load_data('_endpoints_partitions')
+                self._use_modular_endpoints = True
+                logger.debug("Modular endpoint files available")
+            except Exception:
+                self._use_modular_endpoints = False
+                logger.debug("Using legacy endpoints.json")
+        return self._use_modular_endpoints
+
+    def _load_partition_structure(self):
+        """Load the partition structure without service data.
+
+        Returns partition definitions (regions, defaults, etc.) without
+        any service-specific endpoint data.
+        """
+        if self._partition_structure is None:
+            try:
+                self._partition_structure = self._loader.load_data(
+                    '_endpoints_partitions'
+                )
+                logger.debug("Loaded partition structure")
+            except Exception:
+                # Fall back to extracting from full endpoints
+                self._partition_structure = self._extract_partition_structure(
+                    self._get_full_endpoints_data()
+                )
+        return self._partition_structure
+
+    def _extract_partition_structure(self, endpoints_data):
+        """Extract partition structure from full endpoints data.
+
+        Creates a partition structure dict without service data.
+        """
+        result = {
+            'version': endpoints_data.get('version', '3'),
+            'partitions': []
+        }
+        for partition in endpoints_data.get('partitions', []):
+            partition_copy = {
+                'defaults': partition.get('defaults', {}),
+                'dnsSuffix': partition.get('dnsSuffix', ''),
+                'partition': partition.get('partition', ''),
+                'partitionName': partition.get('partitionName', ''),
+                'regionRegex': partition.get('regionRegex', ''),
+                'regions': partition.get('regions', {}),
+                'services': {}
+            }
+            result['partitions'].append(partition_copy)
+        return result
+
+    def _load_service_endpoints(self, service_name, api_version=None):
+        """Load endpoint data for a specific service.
+
+        Tries to load from per-service endpoints.json file first,
+        falling back to extracting from full endpoints.json.
+
+        Args:
+            service_name: The name of the service.
+            api_version: Optional API version.
+
+        Returns:
+            Service endpoint data dict, or None if not found.
+        """
+        cache_key = (service_name, api_version)
+        if cache_key in self._service_endpoints:
+            return self._service_endpoints[cache_key]
+
+        service_endpoints = None
+
+        # Try to load per-service endpoint file
+        if self._check_modular_endpoints_available():
+            try:
+                service_endpoints = self._loader.load_service_model(
+                    service_name, 'endpoints', api_version
+                )
+                logger.debug("Loaded per-service endpoints for %s", service_name)
+            except Exception:
+                # Per-service file not available, will fall back
+                pass
+
+        # Fall back to extracting from full endpoints
+        if service_endpoints is None:
+            full_data = self._get_full_endpoints_data()
+            service_endpoints = self._extract_service_endpoints(
+                full_data, service_name
+            )
+            if service_endpoints:
+                logger.debug(
+                    "Extracted endpoints for %s from full file",
+                    service_name,
+                )
+
+        self._service_endpoints[cache_key] = service_endpoints
+        return service_endpoints
+
+    def _extract_service_endpoints(self, endpoints_data, service_name):
+        """Extract endpoint data for a specific service from full endpoints.
+
+        Creates a minimal endpoints structure containing only the specified
+        service's endpoint data across all partitions.
+        """
+        result = {
+            'version': endpoints_data.get('version', '3'),
+            'partitions': []
+        }
+        for partition in endpoints_data.get('partitions', []):
+            services = partition.get('services', {})
+            if service_name in services:
+                partition_copy = {
+                    'defaults': partition.get('defaults', {}),
+                    'dnsSuffix': partition.get('dnsSuffix', ''),
+                    'partition': partition.get('partition', ''),
+                    'partitionName': partition.get('partitionName', ''),
+                    'regionRegex': partition.get('regionRegex', ''),
+                    'regions': partition.get('regions', {}),
+                    'services': {service_name: services[service_name]}
+                }
+                result['partitions'].append(partition_copy)
+        return result if result['partitions'] else None
+
+    def get_endpoints_for_service(self, service_name, api_version=None):
+        """Get endpoint data for a specific service.
+
+        This method provides per-service endpoint data, loading it lazily.
+        It's more efficient than loading the full endpoints.json when only
+        a single service is needed.
+
+        Args:
+            service_name: The name of the service.
+            api_version: Optional API version.
+
+        Returns:
+            Endpoint data dict for the service.
+        """
+        return self._load_service_endpoints(service_name, api_version)
 
     @property
     def partition_data(self):
