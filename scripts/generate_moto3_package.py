@@ -43,9 +43,9 @@ sys.path.insert(0, str(ROOT_DIR))
 from botocore.loaders import Loader
 
 # moto3 version - should track boto3 version compatibility
-MOTO3_VERSION = "1.35.0"
+MOTO3_VERSION = "1.0.0"
 BOTO3_VERSION = ">=1.35.0,<2.0.0"
-MOTOCORE_VERSION = ">=1.35.0"
+MOTOCORE_VERSION = ">=1.0.0"
 
 
 def get_available_services() -> list[str]:
@@ -160,7 +160,6 @@ requires-python = ">=3.8"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
