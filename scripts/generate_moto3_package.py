@@ -76,7 +76,7 @@ def generate_base_package(output_dir: Path) -> Path:
     package_dir = output_dir / 'moto3'
     package_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create moto3/__init__.py - re-exports boto3's API
+    # Create moto3/__init__.py - implements boto3-compatible API
     init_content = '''"""
 moto3 - Lightweight boto3-compatible SDK using modular motocore.
 
@@ -94,8 +94,11 @@ Usage:
 """
 
 import logging
+import os
 
 from botocore.session import Session as BotocoreSession
+from botocore.loaders import Loader
+from botocore.regions import EndpointResolver
 
 # Common exceptions
 from botocore.exceptions import (
@@ -105,6 +108,8 @@ from botocore.exceptions import (
     PartialCredentialsError,
     NoRegionError,
     EndpointConnectionError,
+    ProfileNotFound,
+    UnknownServiceError,
 )
 
 __version__ = "''' + MOTO3_VERSION + '''"
@@ -127,7 +132,12 @@ def set_stream_logger(name='moto3', level=logging.DEBUG, format_string=None):
 
 
 class Session:
-    """A session manages state about a particular configuration."""
+    """A session manages state about a particular configuration.
+
+    Sessions are the main entry point for creating service clients and
+    resources. A session stores configuration state and allows you to
+    create service clients and resources.
+    """
 
     def __init__(self, aws_access_key_id=None, aws_secret_access_key=None,
                  aws_session_token=None, region_name=None, botocore_session=None,
@@ -135,23 +145,86 @@ class Session:
         if botocore_session is None:
             botocore_session = BotocoreSession()
 
+        self._session = botocore_session
+        self._profile_name = profile_name
+
         if profile_name:
-            botocore_session.set_config_variable('profile', profile_name)
+            self._session.set_config_variable('profile', profile_name)
         if aws_access_key_id or aws_secret_access_key or aws_session_token:
-            botocore_session.set_credentials(
+            self._session.set_credentials(
                 aws_access_key_id, aws_secret_access_key, aws_session_token
             )
         if region_name:
-            botocore_session.set_config_variable('region', region_name)
+            self._session.set_config_variable('region', region_name)
 
-        self._session = botocore_session
-        self.region_name = region_name
+        self._region_name = region_name
+
+    @property
+    def profile_name(self):
+        """The name of the profile or None if no profile is set."""
+        return self._profile_name
+
+    @property
+    def region_name(self):
+        """The name of the region or None if no region is set."""
+        return self._region_name or self._session.get_config_variable('region')
+
+    @property
+    def events(self):
+        """The event handler for this session."""
+        return self._session.get_component('event_emitter')
+
+    @property
+    def available_profiles(self):
+        """List of available profile names."""
+        return self._session.available_profiles
+
+    def get_credentials(self):
+        """Return the botocore credentials associated with this session."""
+        return self._session.get_credentials()
+
+    def get_available_services(self):
+        """Get a list of available services that can be loaded."""
+        return self._session.get_available_services()
+
+    def get_available_resources(self):
+        """Get a list of available resources (requires boto3)."""
+        try:
+            import boto3
+            return boto3.Session().get_available_resources()
+        except ImportError:
+            # Without boto3, no resources are available
+            return []
+
+    def get_available_partitions(self):
+        """List available partition names."""
+        resolver = self._session.get_component('endpoint_resolver')
+        return resolver.get_available_partitions()
+
+    def get_available_regions(self, service_name, partition_name='aws',
+                              allow_non_regional=False):
+        """List available region names for a service."""
+        resolver = self._session.get_component('endpoint_resolver')
+        return resolver.get_available_endpoints(
+            service_name, partition_name, allow_non_regional
+        )
+
+    def get_partition_for_region(self, region_name):
+        """Get the partition name for a region."""
+        resolver = self._session.get_component('endpoint_resolver')
+        for partition in resolver.get_available_partitions():
+            regions = resolver.get_available_endpoints(
+                'ec2', partition, allow_non_regional=True
+            )
+            if region_name in regions:
+                return partition
+        return 'aws'
 
     def client(self, service_name, region_name=None, api_version=None,
                use_ssl=True, verify=None, endpoint_url=None,
                aws_access_key_id=None, aws_secret_access_key=None,
                aws_session_token=None, config=None):
-        """Create a low-level service client."""
+        """Create a low-level service client by name."""
         return self._session.create_client(
             service_name,
             region_name=region_name or self.region_name,
@@ -169,17 +242,23 @@ class Session:
                  use_ssl=True, verify=None, endpoint_url=None,
                  aws_access_key_id=None, aws_secret_access_key=None,
                  aws_session_token=None, config=None):
-        """Create a resource service client (requires boto3)."""
-        # Resources require boto3's resource layer
-        # Fall back to boto3 if available, otherwise raise helpful error
+        """Create a resource service client by name.
+
+        Note: Resources require boto3 to be installed. If you don't need
+        the resource API, use client() instead which works without boto3.
+        """
         try:
             import boto3
-            return boto3.Session(
-                aws_access_key_id=aws_access_key_id or self._session.get_credentials().access_key if self._session.get_credentials() else None,
-                aws_secret_access_key=aws_secret_access_key or self._session.get_credentials().secret_key if self._session.get_credentials() else None,
-                aws_session_token=aws_session_token,
+            # Create a boto3 session with matching credentials
+            creds = self.get_credentials()
+            boto3_session = boto3.Session(
+                aws_access_key_id=aws_access_key_id or (creds.access_key if creds else None),
+                aws_secret_access_key=aws_secret_access_key or (creds.secret_key if creds else None),
+                aws_session_token=aws_session_token or (creds.token if creds else None),
                 region_name=region_name or self.region_name,
-            ).resource(
+                profile_name=self._profile_name,
+            )
+            return boto3_session.resource(
                 service_name,
                 region_name=region_name,
                 api_version=api_version,
@@ -191,7 +270,8 @@ class Session:
         except ImportError:
             raise NotImplementedError(
                 f"resource('{service_name}') requires boto3 to be installed. "
-                f"Use client('{service_name}') instead, or install boto3."
+                f"Install with: pip install boto3\\n"
+                f"Or use client('{service_name}') instead, which works without boto3."
             )
 
 
@@ -204,18 +284,20 @@ def _get_default_session():
     return _default_session
 
 def setup_default_session(**kwargs):
+    """Set up a default session with the given parameters."""
     global _default_session
     _default_session = Session(**kwargs)
 
 def client(*args, **kwargs):
-    """Create a low-level service client."""
+    """Create a low-level service client by name using the default session."""
     return _get_default_session().client(*args, **kwargs)
 
 def resource(*args, **kwargs):
-    """Create a resource service client."""
+    """Create a resource service client by name using the default session."""
     return _get_default_session().resource(*args, **kwargs)
 
 __all__ = [
+    # Core API
     'client',
     'resource',
     'Session',
@@ -230,6 +312,8 @@ __all__ = [
     'PartialCredentialsError',
     'NoRegionError',
     'EndpointConnectionError',
+    'ProfileNotFound',
+    'UnknownServiceError',
 ]
 '''
 
