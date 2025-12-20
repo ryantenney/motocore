@@ -590,3 +590,233 @@ try:
 except ImportError:
     # Core package generator not available
     pass
+
+
+# Test moto3 wrapper package generator
+try:
+    from generate_moto3_package import (
+        MOTO3_VERSION,
+        BOTO3_VERSION,
+        MOTOCORE_VERSION,
+        get_available_services,
+        load_bundles,
+        generate_base_package,
+        generate_service_package as generate_moto3_service_package,
+        generate_bundle_package as generate_moto3_bundle_package,
+        generate_full_package as generate_moto3_full_package,
+    )
+
+    class TestMoto3Constants:
+        """Tests for moto3 generator constants."""
+
+        def test_moto3_version_defined(self):
+            assert MOTO3_VERSION is not None
+            assert '.' in MOTO3_VERSION  # Version format like "1.35.0"
+
+        def test_boto3_version_constraint(self):
+            assert 'boto3' not in BOTO3_VERSION  # Should just be version constraint
+            assert '>=' in BOTO3_VERSION
+
+        def test_motocore_version_constraint(self):
+            assert '>=' in MOTOCORE_VERSION
+
+    class TestMoto3ServiceDiscovery:
+        """Tests for moto3 service discovery."""
+
+        def test_get_available_services(self):
+            services = get_available_services()
+            assert isinstance(services, list)
+            assert len(services) > 100
+            assert 'dynamodb' in services
+            assert 's3' in services
+
+        def test_load_bundles(self):
+            bundles = load_bundles()
+            assert isinstance(bundles, dict)
+            assert 'serverless' in bundles
+            assert 'lambda-dynamodb' in bundles
+
+    class TestMoto3BasePackage:
+        """Tests for moto3 base package generation."""
+
+        def test_generate_base_package(self):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_dir = Path(tmpdir)
+                package_dir = generate_base_package(output_dir)
+
+                # Check package was created
+                assert package_dir.exists()
+                assert package_dir.name == 'moto3'
+
+                # Check expected files
+                assert (package_dir / 'pyproject.toml').exists()
+                assert (package_dir / 'README.md').exists()
+
+                module_dir = package_dir / 'moto3'
+                assert module_dir.exists()
+                assert (module_dir / '__init__.py').exists()
+
+        def test_base_package_init_content(self):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_dir = Path(tmpdir)
+                package_dir = generate_base_package(output_dir)
+
+                init_content = (package_dir / 'moto3' / '__init__.py').read_text()
+
+                # Check re-exports boto3 API
+                assert 'from boto3 import' in init_content
+                assert 'client,' in init_content
+                assert 'resource,' in init_content
+                assert 'Session,' in init_content
+
+                # Check includes exceptions
+                assert 'from botocore.exceptions import' in init_content
+                assert 'ClientError' in init_content
+                assert 'BotoCoreError' in init_content
+
+                # Check version
+                assert '__version__' in init_content
+
+        def test_base_package_pyproject_content(self):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_dir = Path(tmpdir)
+                package_dir = generate_base_package(output_dir)
+
+                pyproject = (package_dir / 'pyproject.toml').read_text()
+
+                # Check dependencies
+                assert 'boto3' in pyproject
+                assert 'motocore-core' in pyproject
+
+                # Check package name
+                assert 'name = "moto3"' in pyproject
+
+    class TestMoto3ServicePackage:
+        """Tests for moto3 service package generation."""
+
+        def test_generate_service_package(self):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_dir = Path(tmpdir)
+                package_dir = generate_moto3_service_package('dynamodb', output_dir)
+
+                # Check package was created
+                assert package_dir.exists()
+                assert package_dir.name == 'moto3-dynamodb'
+
+                # Check expected files
+                assert (package_dir / 'pyproject.toml').exists()
+                assert (package_dir / 'README.md').exists()
+
+                module_dir = package_dir / 'moto3_dynamodb'
+                assert module_dir.exists()
+                assert (module_dir / '__init__.py').exists()
+
+        def test_service_package_dependencies(self):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_dir = Path(tmpdir)
+                package_dir = generate_moto3_service_package('s3', output_dir)
+
+                pyproject = (package_dir / 'pyproject.toml').read_text()
+
+                # Check depends on moto3 and motocore service
+                assert 'moto3>=' in pyproject
+                assert 'motocore-s3' in pyproject
+
+        def test_service_package_init_content(self):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_dir = Path(tmpdir)
+                package_dir = generate_moto3_service_package('dynamodb', output_dir)
+
+                init_content = (package_dir / 'moto3_dynamodb' / '__init__.py').read_text()
+
+                # Check for service name (either quote style)
+                assert '__service__' in init_content
+                assert 'dynamodb' in init_content
+                assert '__version__' in init_content
+
+    class TestMoto3BundlePackage:
+        """Tests for moto3 bundle package generation."""
+
+        def test_generate_bundle_package(self):
+            bundles = load_bundles()
+            services = bundles['lambda-dynamodb']['services']
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_dir = Path(tmpdir)
+                package_dir = generate_moto3_bundle_package(
+                    'lambda-dynamodb', services, output_dir
+                )
+
+                # Check package was created
+                assert package_dir.exists()
+                assert package_dir.name == 'moto3-bundle-lambda-dynamodb'
+
+                # Check expected files
+                assert (package_dir / 'pyproject.toml').exists()
+                assert (package_dir / 'README.md').exists()
+
+        def test_bundle_package_dependencies(self):
+            bundles = load_bundles()
+            services = bundles['serverless']['services']
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_dir = Path(tmpdir)
+                package_dir = generate_moto3_bundle_package(
+                    'serverless', services, output_dir
+                )
+
+                pyproject = (package_dir / 'pyproject.toml').read_text()
+
+                # Check depends on moto3 and motocore bundle
+                assert 'moto3>=' in pyproject
+                assert 'motocore-bundle-serverless' in pyproject
+
+        def test_bundle_package_init_content(self):
+            bundles = load_bundles()
+            services = bundles['lambda-dynamodb']['services']
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_dir = Path(tmpdir)
+                package_dir = generate_moto3_bundle_package(
+                    'lambda-dynamodb', services, output_dir
+                )
+
+                init_content = (
+                    package_dir / 'moto3_bundle_lambda_dynamodb' / '__init__.py'
+                ).read_text()
+
+                # Check for bundle name (either quote style)
+                assert '__bundle__' in init_content
+                assert 'lambda-dynamodb' in init_content
+                assert '__services__' in init_content
+
+    class TestMoto3FullPackage:
+        """Tests for moto3-full package generation."""
+
+        def test_generate_full_package(self):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_dir = Path(tmpdir)
+                package_dir = generate_moto3_full_package(output_dir)
+
+                # Check package was created
+                assert package_dir.exists()
+                assert package_dir.name == 'moto3-full'
+
+                # Check expected files
+                assert (package_dir / 'pyproject.toml').exists()
+                assert (package_dir / 'README.md').exists()
+
+        def test_full_package_dependencies(self):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_dir = Path(tmpdir)
+                package_dir = generate_moto3_full_package(output_dir)
+
+                pyproject = (package_dir / 'pyproject.toml').read_text()
+
+                # Check depends on moto3 and motocore-full
+                assert 'moto3>=' in pyproject
+                assert 'motocore-full' in pyproject
+
+except ImportError:
+    # moto3 package generator not available
+    pass

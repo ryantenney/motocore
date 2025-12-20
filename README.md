@@ -21,33 +21,46 @@ The standard botocore package includes service definitions for all 400+ AWS serv
 
 ## The Solution
 
-motocore splits botocore into modular packages:
+motocore splits botocore into modular packages, and **moto3** provides a convenient wrapper:
 
 | Package | Size | Description |
 |---------|------|-------------|
-| `motocore-core` | 2.9 MB | Core SDK functionality |
-| `motocore-dynamodb` | 600 KB | DynamoDB service definitions |
-| `motocore-s3` | 2.1 MB | S3 service definitions |
-| `motocore-bundle-serverless` | 3.0 MB | Lambda, DynamoDB, API Gateway, SQS, SNS, Step Functions |
+| `moto3-dynamodb` | 3.5 MB | Complete solution: moto3 + motocore-core + DynamoDB |
+| `moto3-bundle-serverless` | 6.0 MB | moto3 + common serverless services |
+| `motocore-core` | 2.9 MB | Core SDK functionality (for boto3 users) |
+| `motocore-dynamodb` | 600 KB | DynamoDB service definitions only |
 | `motocore` | 111 MB | Full package (backwards compatible) |
 
 **Result**: A Lambda function using only DynamoDB needs just **~3.5 MB** instead of 111 MB.
 
 ## Installation
 
-### For Size-Constrained Environments (Lambda, etc.)
+### Recommended: Use moto3 (simplest)
 
-Install only what you need:
+```bash
+# Single service
+pip install moto3-dynamodb
+
+# Multiple services - use a bundle
+pip install moto3-bundle-serverless
+
+# All services
+pip install moto3-full
+```
+
+### Alternative: Use with existing boto3
+
+If you're already using boto3, you can install motocore packages directly:
 
 ```bash
 # Core + single service
-pip install motocore-core motocore-dynamodb
+pip install boto3 motocore-core motocore-dynamodb
 
 # Core + multiple services
-pip install motocore-core motocore-dynamodb motocore-s3 motocore-sqs
+pip install boto3 motocore-core motocore-dynamodb motocore-s3 motocore-sqs
 
 # Core + a bundle (common service combinations)
-pip install motocore-core motocore-bundle-serverless
+pip install boto3 motocore-core motocore-bundle-serverless
 ```
 
 ### For Full Compatibility
@@ -88,14 +101,14 @@ response = table.get_item(Key={'id': '123'})
 
 ### Lambda Function Example
 
+**Using moto3 (recommended):**
+
 ```python
 # requirements.txt:
-# boto3
-# motocore-core
-# motocore-dynamodb
-# motocore-sqs
+# moto3-dynamodb
+# moto3-sqs
 
-import boto3
+import moto3 as boto3
 import json
 
 dynamodb = boto3.resource('dynamodb')
@@ -113,6 +126,75 @@ def handler(event, context):
     )
 
     return {'statusCode': 200}
+```
+
+**Using boto3 with motocore:**
+
+```python
+# requirements.txt:
+# boto3
+# motocore-core
+# motocore-dynamodb
+# motocore-sqs
+
+import boto3  # Works unchanged - motocore is auto-discovered
+import json
+
+dynamodb = boto3.resource('dynamodb')
+sqs = boto3.client('sqs')
+
+def handler(event, context):
+    table = dynamodb.Table('my-table')
+    table.put_item(Item={'id': event['id'], 'data': event['data']})
+    # ...
+```
+
+## moto3: Convenience Wrapper
+
+For the cleanest installation experience, use **moto3** - a thin boto3 wrapper that depends on motocore:
+
+```bash
+# Single install for DynamoDB support
+pip install moto3-dynamodb
+
+# Or use a bundle
+pip install moto3-bundle-serverless
+```
+
+Then use it as a drop-in replacement for boto3:
+
+```python
+import moto3 as boto3
+
+# Same API as boto3, but with modular motocore under the hood
+dynamodb = boto3.client('dynamodb')
+s3 = boto3.resource('s3')
+```
+
+### moto3 Package Hierarchy
+
+```
+moto3                           # Base: boto3 wrapper + motocore-core
+├── moto3-dynamodb             # moto3 + motocore-dynamodb
+├── moto3-s3                   # moto3 + motocore-s3
+├── moto3-bundle-serverless    # moto3 + motocore-bundle-serverless
+└── moto3-full                 # moto3 + all services
+```
+
+### Generating moto3 Packages
+
+```bash
+# Generate base moto3 package
+python scripts/generate_moto3_package.py --base
+
+# Generate service package
+python scripts/generate_moto3_package.py --service dynamodb
+
+# Generate bundle package
+python scripts/generate_moto3_package.py --bundle serverless
+
+# Generate all packages
+python scripts/generate_moto3_package.py --all
 ```
 
 ## Available Packages
