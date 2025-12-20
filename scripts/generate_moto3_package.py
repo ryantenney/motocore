@@ -78,7 +78,7 @@ def generate_base_package(output_dir: Path) -> Path:
 
     # Create moto3/__init__.py - re-exports boto3's API
     init_content = '''"""
-moto3 - Lightweight boto3 wrapper using modular motocore.
+moto3 - Lightweight boto3-compatible SDK using modular motocore.
 
 This package provides the same API as boto3 but depends on motocore-core
 instead of the full botocore package, reducing deployment size significantly.
@@ -93,25 +93,11 @@ Usage:
     s3 = moto3.resource('s3')
 """
 
-# Re-export boto3's public API
-from boto3 import (
-    # Core functions
-    client,
-    resource,
+import logging
 
-    # Session management
-    Session,
-    setup_default_session,
-    set_stream_logger,
+from botocore.session import Session as BotocoreSession
 
-    # NullHandler for logging
-    NullHandler,
-
-    # Version info
-    __version__ as boto3_version,
-)
-
-# Also expose commonly used exceptions via botocore
+# Common exceptions
 from botocore.exceptions import (
     BotoCoreError,
     ClientError,
@@ -122,6 +108,113 @@ from botocore.exceptions import (
 )
 
 __version__ = "''' + MOTO3_VERSION + '''"
+
+# Logging setup
+class NullHandler(logging.Handler):
+    def emit(self, record):
+        pass
+
+def set_stream_logger(name='moto3', level=logging.DEBUG, format_string=None):
+    if format_string is None:
+        format_string = "%(asctime)s %(name)s [%(levelname)s] %(message)s"
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    handler = logging.StreamHandler()
+    handler.setLevel(level)
+    formatter = logging.Formatter(format_string)
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+
+class Session:
+    """A session manages state about a particular configuration."""
+
+    def __init__(self, aws_access_key_id=None, aws_secret_access_key=None,
+                 aws_session_token=None, region_name=None, botocore_session=None,
+                 profile_name=None):
+        if botocore_session is None:
+            botocore_session = BotocoreSession()
+
+        if profile_name:
+            botocore_session.set_config_variable('profile', profile_name)
+        if aws_access_key_id or aws_secret_access_key or aws_session_token:
+            botocore_session.set_credentials(
+                aws_access_key_id, aws_secret_access_key, aws_session_token
+            )
+        if region_name:
+            botocore_session.set_config_variable('region', region_name)
+
+        self._session = botocore_session
+        self.region_name = region_name
+
+    def client(self, service_name, region_name=None, api_version=None,
+               use_ssl=True, verify=None, endpoint_url=None,
+               aws_access_key_id=None, aws_secret_access_key=None,
+               aws_session_token=None, config=None):
+        """Create a low-level service client."""
+        return self._session.create_client(
+            service_name,
+            region_name=region_name or self.region_name,
+            api_version=api_version,
+            use_ssl=use_ssl,
+            verify=verify,
+            endpoint_url=endpoint_url,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key,
+            aws_session_token=aws_session_token,
+            config=config,
+        )
+
+    def resource(self, service_name, region_name=None, api_version=None,
+                 use_ssl=True, verify=None, endpoint_url=None,
+                 aws_access_key_id=None, aws_secret_access_key=None,
+                 aws_session_token=None, config=None):
+        """Create a resource service client (requires boto3)."""
+        # Resources require boto3's resource layer
+        # Fall back to boto3 if available, otherwise raise helpful error
+        try:
+            import boto3
+            return boto3.Session(
+                aws_access_key_id=aws_access_key_id or self._session.get_credentials().access_key if self._session.get_credentials() else None,
+                aws_secret_access_key=aws_secret_access_key or self._session.get_credentials().secret_key if self._session.get_credentials() else None,
+                aws_session_token=aws_session_token,
+                region_name=region_name or self.region_name,
+            ).resource(
+                service_name,
+                region_name=region_name,
+                api_version=api_version,
+                use_ssl=use_ssl,
+                verify=verify,
+                endpoint_url=endpoint_url,
+                config=config,
+            )
+        except ImportError:
+            raise NotImplementedError(
+                f"resource('{service_name}') requires boto3 to be installed. "
+                f"Use client('{service_name}') instead, or install boto3."
+            )
+
+
+_default_session = None
+
+def _get_default_session():
+    global _default_session
+    if _default_session is None:
+        _default_session = Session()
+    return _default_session
+
+def setup_default_session(**kwargs):
+    global _default_session
+    _default_session = Session(**kwargs)
+
+def client(*args, **kwargs):
+    """Create a low-level service client."""
+    return _get_default_session().client(*args, **kwargs)
+
+def resource(*args, **kwargs):
+    """Create a resource service client."""
+    return _get_default_session().resource(*args, **kwargs)
+
 __all__ = [
     'client',
     'resource',
@@ -129,7 +222,6 @@ __all__ = [
     'setup_default_session',
     'set_stream_logger',
     'NullHandler',
-    'boto3_version',
     '__version__',
     # Exceptions
     'BotoCoreError',
@@ -168,9 +260,12 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "boto3{BOTO3_VERSION}",
     "motocore-core{MOTOCORE_VERSION}",
 ]
+
+[project.optional-dependencies]
+# Install boto3 only if you need resource() API
+resources = ["boto3{BOTO3_VERSION}"]
 
 [project.urls]
 Homepage = "https://github.com/ryantenney/motocore"

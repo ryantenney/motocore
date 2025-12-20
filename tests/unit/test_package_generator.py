@@ -663,11 +663,10 @@ try:
 
                 init_content = (package_dir / 'moto3' / '__init__.py').read_text()
 
-                # Check re-exports boto3 API
-                assert 'from boto3 import' in init_content
-                assert 'client,' in init_content
-                assert 'resource,' in init_content
-                assert 'Session,' in init_content
+                # Check implements boto3-compatible API
+                assert 'def client(' in init_content
+                assert 'def resource(' in init_content
+                assert 'class Session' in init_content
 
                 # Check includes exceptions
                 assert 'from botocore.exceptions import' in init_content
@@ -684,8 +683,7 @@ try:
 
                 pyproject = (package_dir / 'pyproject.toml').read_text()
 
-                # Check dependencies
-                assert 'boto3' in pyproject
+                # Check dependencies (only motocore-core required, boto3 optional)
                 assert 'motocore-core' in pyproject
 
                 # Check package name
